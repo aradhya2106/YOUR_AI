@@ -1,113 +1,115 @@
-import * as userService from '../service/user.service.js';
 import userModel from '../models/user.model.js';
-  import { validationResult } from 'express-validator';
-  import User from "../models/user.model.js";
-  import jwt from 'jsonwebtoken';
+import * as userService from '../services/user.service.js';
+import { validationResult } from 'express-validator';
+import redisClient from '../services/redis.service.js';
 
-import bcrypt from "bcrypt";
 
-  import redisClient from '../service/redis.service.js';
-  
-  export const createUserController = async (req, res) => {
+export const createUserController = async (req, res) => {
 
-   
+    const errors = validationResult(req);
+
+    if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+    }
     try {
-        const { email, password } = req.body;
+        const user = await userService.createUser(req.body);
 
-        const existingUser = await User.findOne({ email });
-        if (existingUser) {
-            console.log("Duplicate email registration attempt");
-            return res.status(400).send({ errors: "User already exists" });
-        }
+        const token = await user.generateJWT();
 
-        // Inside createUserController
-        const hashedPassword = await User.hashPassword(password);
-        
+        delete user._doc.password;
 
-        //delete User._doc.password;
-
-
-     // Create and save user
-     const newUser = new User({ email, password: hashedPassword });
-     await newUser.save();
-      // Remove password from the response
-      const userResponse = { ...newUser._doc };
-      delete userResponse.password;
-    
-     res.status(201).send({ message: "User registered successfully",  user: userResponse, });
- } catch (error) {
-    console.error("Error in createUserController:", error); 
-     res.status(500).send({ errors: "Server error",  details: error.message });
- }
-};
+        res.status(201).json({ user, token });
+    } catch (error) {
+        res.status(400).send(error.message);
+    }
+}
 
 export const loginController = async (req, res) => {
+    const errors = validationResult(req);
+
+    if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+    }
+
     try {
+
         const { email, password } = req.body;
-        console.log("Login attempt for email:", email);
 
-
-        // Find user and include password explicitly
-        const user = await User.findOne({ email }).select('+password');
+        const user = await userModel.findOne({ email }).select('+password');
 
         if (!user) {
-            console.log("User not found");
-            return res.status(400).send({ errors: "Invalid credentials" });
+            return res.status(401).json({
+                errors: 'Invalid credentials'
+            })
         }
 
-        // Validate the password
-        const isValidPassword = await bcrypt.compare(password, user.password);
+        const isMatch = await user.isValidPassword(password);
 
-        if (!isValidPassword) {
-            console.log("Invalid password for user:", user.email);
-            return res.status(400).send({ errors: "Invalid credentials" });
+        if (!isMatch) {
+            return res.status(401).json({
+                errors: 'Invalid credentials'
+            })
         }
 
-        // Generate JWT token
-        const token = jwt.sign({ id: user._id, email: user.email }, process.env.JWT_SECRET, { expiresIn: '24h' });
-        console.log("Login successful:", user.email);
+        const token = await user.generateJWT();
 
-        // Send token in cookies and response
-         // Send token and user info
-         res.status(200).send({
-            message: "Login successful",
-            user: {
-                id: user._id,
-                email: user.email,
-            },
-           token: token,
-        });
-    } catch (error) {
-        console.error("Login error:",error);
-        res.status(500).send({ errors: "Server error" , message: error.message});
+        delete user._doc.password;
+
+        res.status(200).json({ user, token });
+
+
+    } catch (err) {
+
+        console.log(err);
+
+        res.status(400).send(err.message);
     }
-};
+}
 
-  export const profileController = async (req, res) => {
-     
-console.log(req.user);
+export const profileController = async (req, res) => {
 
-res.status(200).json({
-    user: req.user
-});
+    res.status(200).json({
+        user: req.user
+    });
 
 }
 
-  export const logoutController = async (req, res) => {
+export const logoutController = async (req, res) => {
     try {
-       
-        const token = req.cookies.token || req.headers.authorization.
-        split(' ')[ 1 ];
+
+        const token = req.cookies.token || req.headers.authorization.split(' ')[ 1 ];
 
         redisClient.set(token, 'logout', 'EX', 60 * 60 * 24);
 
         res.status(200).json({
             message: 'Logged out successfully'
-        }); 
-
+        });
 
 
     } catch (err) {
-        res.status(500).send({ errors: "Server error", message: err.message });
+        console.log(err);
+        res.status(400).send(err.message);
     }
-  }
+}
+
+export const getAllUsersController = async (req, res) => {
+    try {
+
+        const loggedInUser = await userModel.findOne({
+            email: req.user.email
+        })
+
+        const allUsers = await userService.getAllUsers({ userId: loggedInUser._id });
+
+        return res.status(200).json({
+            users: allUsers
+        })
+
+    } catch (err) {
+
+        console.log(err)
+
+        res.status(400).json({ error: err.message })
+
+    }
+}
